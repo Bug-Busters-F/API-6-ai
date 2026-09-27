@@ -36,6 +36,157 @@ Consulte o README e a documentação do repositório, quando disponíveis, para 
 
 Não inclua senhas, tokens ou outras informações sensíveis nos arquivos versionados. Se houver um arquivo de exemplo de variáveis de ambiente, use-o como referência para sua configuração local.
 
+## Serviço AI (Python)
+
+### Pré-requisitos
+
+- Python 3.12 ou superior
+- Chave de API do provedor de LLM escolhido (Gemini, Groq, OpenAI ou Anthropic)
+
+### Instalação
+
+```bash
+# 1. Criar e ativar ambiente virtual
+python -m venv venv
+
+# Windows
+venv\Scripts\activate
+
+# Linux / macOS
+source venv/bin/activate
+
+# 2. Instalar dependências base
+pip install -r requirements.txt
+
+# 3. Instalar o SDK do provedor de LLM que você vai usar (escolha um)
+pip install google-genai          # Gemini (provedor padrão)
+pip install groq                  # Groq
+pip install openai                # OpenAI
+pip install anthropic             # Anthropic
+```
+
+### Variáveis de Ambiente
+
+Copie o arquivo de exemplo e preencha com suas credenciais:
+
+```bash
+cp .env.example .env
+```
+
+Edite o `.env` com os valores corretos:
+
+| Variável                | Descrição                                                    | Exemplo            | Padrão               |
+|-------------------------|--------------------------------------------------------------|--------------------|----------------------|
+| `LLM_PROVIDER`          | Provedor de LLM (`gemini`, `groq`, `openai` ou `anthropic`)  | `gemini`           | `gemini`             |
+| `LLM_SDK`               | Pacote SDK para instalação no build Docker                   | `google-genai`     | `google-genai`       |
+| `LLM_API_KEY`           | Chave de API do provedor configurado                         | `AIza...`          | `""` (obrigatória)   |
+| `LLM_MODEL`             | Modelo específico (vazio usa o padrão do provedor)           | `gemini-3.6-flash` | `gemini-3.6-flash`   |
+| `LLM_TEMPERATURE`       | Temperatura de inferência (0.0 para determinismo estruturado)| `0.0`              | `0.0`                |
+| `LLM_TIMEOUT_SECONDS`   | Tempo limite em segundos para a chamada ao provedor          | `30`               | `30`                 |
+| `LLM_MAX_OUTPUT_TOKENS` | Limite máximo de tokens gerados na resposta                  | `1024`             | `1024`               |
+| `APP_HOST`              | Host em que o servidor FastAPI escuta                        | `0.0.0.0`          | `0.0.0.0`            |
+| `APP_PORT`              | Porta em que o serviço sobe                                  | `8000`             | `8000`               |
+| `APP_RELOAD`            | Hot reload para desenvolvimento local                        | `true`             | `false`              |
+
+> **Nunca versione o arquivo `.env`.** Ele já está no `.gitignore`.
+
+### Executando os Testes
+
+Para executar toda a suíte de testes unitários e de integração manualmente:
+
+```bash
+# A partir da raiz do repositório, com o ambiente virtual (venv) ativo:
+python -m unittest discover -s tests
+
+# Para rodar um arquivo de teste específico em modo verboso:
+python -m unittest -v tests/test_schemas_regra.py
+python -m unittest -v tests/test_providers.py
+python -m unittest -v tests/test_exceptions.py
+python -m unittest -v tests/test_api_exceptions.py
+```
+
+### Inicialização Local
+
+```bash
+# A partir da raiz do repositório, com o venv ativo:
+python -m uvicorn app.main:app --reload --app-dir src
+```
+
+O serviço estará disponível em `http://localhost:8000`.
+Documentação interativa (Swagger): `http://localhost:8000/docs`
+Health check: `http://localhost:8000/health`
+
+### Execução via Docker
+
+#### Pré-requisitos
+
+- [Docker](https://docs.docker.com/get-docker/) instalado e em execução
+- [Docker Compose](https://docs.docker.com/compose/install/) (já incluído no Docker Desktop)
+
+#### Configurar variáveis de ambiente
+
+O `.env` é obrigatório antes de subir o container (o `.dockerignore` garante que ele não entre na imagem):
+
+```bash
+cp .env.example .env
+# edite o .env com sua LLM_API_KEY e LLM_PROVIDER
+```
+
+#### Subir o serviço
+
+```bash
+# Construir a imagem e iniciar o container
+docker compose up --build
+
+# Ou em segundo plano (modo detached)
+docker compose up --build -d
+```
+
+O serviço estará disponível em `http://localhost:8000`.
+Documentação interativa (Swagger): `http://localhost:8000/docs`
+Health check: `http://localhost:8000/health`
+
+#### Hot reload durante o desenvolvimento
+
+Para que alterações em `src/` sejam refletidas sem rebuildar a imagem, descomente o bloco `volumes` e `command` no `docker-compose.yml`:
+
+```yaml
+volumes:
+  - ./src:/api/src
+command: >
+  python -m uvicorn app.main:app
+  --host 0.0.0.0 --port 8000
+  --app-dir src --reload
+```
+
+E então suba normalmente com `docker compose up`.
+
+#### Comandos úteis
+
+```bash
+# Ver logs em tempo real
+docker compose logs -f ai
+
+# Parar e remover o container
+docker compose down
+
+# Acessar o shell do container
+docker compose exec ai bash
+
+# Rebuildar a imagem após mudar requirements.txt ou trocar de SDK
+docker compose up --build
+
+# Para buildar com outro provedor (ex: Groq)
+docker compose build --build-arg LLM_SDK=groq
+```
+
+### Documentação de Integração e Contratos
+
+Para apoiar a equipe na integração do ambiente unificado (**S1-B13**) e na elaboração do manual de entrega (**S1-B14**):
+
+- **[Guia de Execução, Empacotamento e Integração](./docs/GUIA-EXECUCAO-E-INTEGRACAO.md)**: Guia completo para os desenvolvedores e DevOps, com topologia de rede Docker, configuração recomendada no Spring Boot (`application.yml`), mapeamento de códigos de erro (`401`, `429`, `502`, `504`), scripts de diagnóstico de conectividade do LLM e limitações aprovadas para o MVP.
+- **[Contrato da Rota de Interpretação](./docs/CONTRATO-INTERPRETAR.md)**: Especificação formal da rota `POST /api/v1/interpretar`, detalhando cada campo de entrada/saída, catálogo de dimensões e comportamento com pendências.
+
 ## Enviando uma Contribuição
 
 1. Crie uma branch para sua alteração:
