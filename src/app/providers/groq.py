@@ -16,6 +16,10 @@ Nota sobre JSON Schema:
 """
 
 import json
+import logging
+import time
+
+import httpx
 from app.core.config import settings
 from app.core.exceptions import (
     LLMAuthenticationError,
@@ -25,6 +29,8 @@ from app.core.exceptions import (
     LLMTimeoutError,
 )
 from app.providers.base import LLMProvider
+
+logger = logging.getLogger(__name__)
 
 
 def _preparar_schema_estrito(schema: dict) -> dict:
@@ -78,11 +84,77 @@ class GroqProvider(LLMProvider):
                 "Chave de API da Groq (LLM_API_KEY) não configurada no ambiente."
             )
 
+        self._timeout = float(settings.llm_timeout_seconds)
+        # Evita as retentativas internas do SDK para que uma falha de conexão
+        # possa acionar o fallback IPv4 antes do timeout do Spring.
         self._client = Groq(
             api_key=settings.llm_api_key,
-            timeout=float(settings.llm_timeout_seconds),
+            timeout=httpx.Timeout(self._timeout, connect=min(3.0, self._timeout)),
+            max_retries=0,
         )
         self._model = settings.llm_model or "openai/gpt-oss-20b"
+
+    def _request_payload(self, prompt: str, schema: dict) -> dict:
+        return {
+            "model": self._model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": settings.llm_temperature,
+            "max_tokens": settings.llm_max_output_tokens,
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "resposta_estruturada",
+                    "schema": schema,
+                    "strict": True,
+                },
+            },
+        }
+
+    def _complete_ipv4(self, payload: dict):
+        """Repete uma chamada de transporte usando somente IPv4.
+
+        O transporte padrão continua sendo a primeira tentativa. O cliente
+        temporário limita o fallback a esta chamada e mantém TLS, DNS e a
+        validação normal do SDK.
+        """
+        import groq
+
+        transport = httpx.HTTPTransport(local_address="0.0.0.0")
+        http_client = httpx.Client(transport=transport)
+        try:
+            ipv4_client = groq.Groq(
+                api_key=settings.llm_api_key,
+                timeout=httpx.Timeout(self._timeout, connect=min(3.0, self._timeout)),
+                max_retries=0,
+                http_client=http_client,
+            )
+            try:
+                return ipv4_client.chat.completions.create(**payload)
+            finally:
+                close = getattr(ipv4_client, "close", None)
+                if callable(close):
+                    close()
+        finally:
+            http_client.close()
+
+    def _complete_with_ipv4_fallback(self, payload: dict):
+        import groq
+
+        started_at = time.monotonic()
+        try:
+            return self._client.chat.completions.create(**payload)
+        except (groq.APIConnectionError, groq.APITimeoutError, TimeoutError) as primary_error:
+            elapsed = time.monotonic() - started_at
+            logger.warning(
+                "Falha de conexão com a Groq após %.2fs; tentando uma vez via IPv4.",
+                elapsed,
+            )
+            try:
+                return self._complete_ipv4(payload)
+            except (groq.APIConnectionError, groq.APITimeoutError, TimeoutError):
+                # Mantém o erro original para que o tratamento existente
+                # classifique a causa sem expor detalhes da chave ou do prompt.
+                raise primary_error from None
 
     def complete(self, prompt: str, response_schema: dict) -> dict:
         """Chama a Groq com saída estruturada via JSON Schema estrito."""
@@ -91,19 +163,8 @@ class GroqProvider(LLMProvider):
         schema_estrito = _preparar_schema_estrito(response_schema)
 
         try:
-            response = self._client.chat.completions.create(
-                model=self._model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=settings.llm_temperature,
-                max_tokens=settings.llm_max_output_tokens,
-                response_format={
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "resposta_estruturada",
-                        "schema": schema_estrito,
-                        "strict": True,
-                    },
-                },
+            response = self._complete_with_ipv4_fallback(
+                self._request_payload(prompt, schema_estrito)
             )
         except groq.AuthenticationError:
             raise LLMAuthenticationError(

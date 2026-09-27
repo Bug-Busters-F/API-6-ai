@@ -444,6 +444,52 @@ class TestGroqProvider(unittest.TestCase):
                 with self.assertRaises(LLMResponseParsingError):
                     provider.complete("teste prompt", {})
 
+    def test_groq_tenta_ipv4_uma_vez_apos_falha_de_conexao(self):
+        with patch.dict(sys.modules, {"groq": self.fake_groq}):
+            with patch("app.core.config.settings.llm_api_key", "fake-key"):
+                from app.providers.groq import GroqProvider
+
+                provider = GroqProvider()
+                primary_client = provider._client
+                primary_client.chat.completions.create.side_effect = self.fake_groq.APIConnectionError(
+                    "conexão IPv6 indisponível"
+                )
+
+                fallback_client = MagicMock()
+                fallback_response = MagicMock()
+                fallback_response.choices[0].message.content = '{"taxa_raw": "5%"}'
+                fallback_client.chat.completions.create.return_value = fallback_response
+                fallback_client.close = MagicMock()
+                self.fake_groq.Groq.side_effect = [fallback_client]
+
+                fake_http_client = MagicMock()
+                with patch("app.providers.groq.httpx.HTTPTransport") as transport, \
+                     patch("app.providers.groq.httpx.Client", return_value=fake_http_client):
+                    result = provider.complete("teste prompt", {})
+
+                self.assertEqual(result, {"taxa_raw": "5%"})
+                transport.assert_called_once_with(local_address="0.0.0.0")
+                fallback_client.chat.completions.create.assert_called_once_with(
+                    **primary_client.chat.completions.create.call_args.kwargs
+                )
+                fallback_client.close.assert_called_once()
+                fake_http_client.close.assert_called_once()
+
+    def test_groq_nao_faz_fallback_para_erro_de_autenticacao(self):
+        with patch.dict(sys.modules, {"groq": self.fake_groq}):
+            with patch("app.core.config.settings.llm_api_key", "fake-key"):
+                from app.providers.groq import GroqProvider
+                provider = GroqProvider()
+                provider._client.chat.completions.create.side_effect = self.fake_groq.AuthenticationError(
+                    "credencial inválida"
+                )
+
+                with patch("app.providers.groq.httpx.HTTPTransport") as transport:
+                    with self.assertRaises(LLMAuthenticationError):
+                        provider.complete("teste prompt", {})
+
+                transport.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
