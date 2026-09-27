@@ -35,6 +35,10 @@ def trigger_timeout_error():
 def trigger_provider_error():
     raise LLMProviderError("Falha interna no serviço de LLM.")
 
+@app.get("/test/error/unexpected")
+def trigger_unexpected_error():
+    raise RuntimeError("Bug não previsto, não relacionado a LLM.")
+
 
 class TestAPIExceptionHandlers(unittest.TestCase):
     def setUp(self):
@@ -72,6 +76,19 @@ class TestAPIExceptionHandlers(unittest.TestCase):
         data = response.json()
         self.assertEqual(data["error_code"], "LLM_PROVIDER_ERROR")
         self.assertIn("Falha interna", data["detail"])
+
+    def test_unexpected_exception_status_500_sem_vazar_detalhe_interno(self):
+        # raise_server_exceptions=False: queremos a resposta HTTP do handler,
+        # não a exceção Python subindo direto no teste.
+        client_sem_raise = TestClient(app, raise_server_exceptions=False)
+
+        response = client_sem_raise.get("/test/error/unexpected")
+
+        self.assertEqual(response.status_code, 500)
+        data = response.json()
+        self.assertEqual(data["error_code"], "INTERNAL_ERROR")
+        self.assertNotIn("Bug não previsto", data["detail"])
+        self.assertNotIn("RuntimeError", data["detail"])
 
 
 if __name__ == "__main__":

@@ -10,6 +10,7 @@ Fluxo de Execução:
 6. Retorno do DTO padronizado InterpretacaoRegraResponse.
 """
 
+import logging
 import time
 from typing import Any
 from pydantic import ValidationError
@@ -25,6 +26,8 @@ from app.providers import get_provider
 from app.providers.base import LLMProvider
 from app.schemas.raw import InterpretacaoRegraRawLLM
 from app.schemas.regra import InterpretacaoRegraRequest, InterpretacaoRegraResponse
+
+logger = logging.getLogger(__name__)
 
 
 class InterpretadorRegraService:
@@ -55,9 +58,18 @@ class InterpretadorRegraService:
         """
         try:
             return self.provider.complete(prompt=prompt, response_schema=schema)
-        except LLMProviderError:
+        except LLMProviderError as exc:
+            logger.warning(
+                "Falha transitória do provedor (%s) na 1ª tentativa, retentando em %.1fs",
+                exc.message,
+                self.RETRY_BACKOFF_SECONDS,
+            )
             time.sleep(self.RETRY_BACKOFF_SECONDS)
-            return self.provider.complete(prompt=prompt, response_schema=schema)
+            try:
+                return self.provider.complete(prompt=prompt, response_schema=schema)
+            except LLMProviderError as exc_retry:
+                logger.error("Retry também falhou, propagando erro: %s", exc_retry.message)
+                raise
 
     def interpretar(self, request: InterpretacaoRegraRequest) -> InterpretacaoRegraResponse:
         """
@@ -71,6 +83,12 @@ class InterpretadorRegraService:
         """
         texto = request.texto.strip()
         contexto = request.contexto or {}
+
+        logger.info(
+            "Iniciando interpretação (texto com %d caracteres, preview: %r)",
+            len(texto),
+            texto[:60],
+        )
 
         # 1. Montagem do prompt especializado
         prompt = montar_prompt_interpretacao(texto=texto, contexto=contexto)
@@ -132,6 +150,12 @@ class InterpretadorRegraService:
             cod_marca=cod_marca,
             cod_cargo=cod_cargo,
             cod_loja=cod_loja,
+        )
+
+        logger.info(
+            "Interpretação concluída: confianca=%s pendencias=%d",
+            confianca_calculada,
+            len(pendencias),
         )
 
         # 7. Construção do DTO de resposta do contrato
